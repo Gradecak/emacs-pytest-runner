@@ -58,9 +58,9 @@
   (let ((pos 0)
 	(matches))
     (save-match-data
-      (while (string-match "^FAILED \\(.*\\[.*\\]]?\\)" string pos)
-	(push (match-string 1 string) matches)
-	(setq pos (match-end 1))))
+      (while (string-match "^\\(FAILED\\|ERROR\\) \\(.*\\[.*\\]]?\\)" string pos)
+	(push (match-string 2 string) matches)
+	(setq pos (match-end 2))))
     (pytest-command-runner
      (format "%s %s" pytest-cmd (mapconcat (lambda (m) (format "\"%s\"" m)) matches " "))
      pytest-buffer-name)))
