@@ -58,7 +58,7 @@
   (let ((pos 0)
 	(matches))
     (save-match-data
-      (while (string-match "^\\(FAILED\\|ERROR\\) \\(.*\\[.*\\]]?\\)" string pos)
+      (while (string-match "^\\(FAILED\\|ERROR\\) \\(.*?\\.py::.*?\\)\\( - \\|$\\)" string pos)
 	(push (match-string 2 string) matches)
 	(setq pos (match-end 2))))
     (pytest-command-runner
