@@ -13,53 +13,69 @@
   "pytest"
   :lighter pytest
   :keymap (let ((map (make-sparse-keymap)))
-            (define-key map (kbd "q") 'quit-window)
-	    (define-key map (kbd "F") 'pytest-rerun-failed)
-	    (define-key map (kbd "R") 'pytest-run)
-	    (define-key map (kbd "P") 'pytest-run-previous)
-	    (define-key map (kbd "C-c C-c") 'pytest-run-failed-selection)
+            (define-key map (kbd "C-q") 'quit-window)
+	    (define-key map (kbd "C-S-f") 'pytest-rerun-failed)
+	    (define-key map (kbd "C-S-r") 'pytest-run)
+	    (define-key map (kbd "C-S-p") 'pytest-run-previous)
+	    (define-key map (kbd "C-c C-v") 'pytest-run-failed-selection)
             map))
 
-(defvar pytest-cmd "docker-compose run --rm app pytest"
-  "The pytest executable that will be used by pytest mode.")
+(defcustom pytest-cmd "docker-compose run --rm app pytest"
+  "The pytest executable that will be used by pytest mode."
+  :group 'pytest-mode)
 
-(defvar pytest-test-dir ""
-  "Needed temporarily while we have multiple folders in papyrus.")
+(defcustom pytest-test-dir ""
+  "Needed temporarily while we have multiple folders in papyrus."
+  :group 'pytest-mode)
 
-(defvar pytest-history (make-hash-table :test 'equal)
-  "Record the history of pytest commands.")
+(defcustom pytest-history (make-hash-table :test 'equal)
+  "Record the history of pytest commands."
+  :group 'pytest-mode)
 
-(defvar pytest-buffer-name "*tests*"
-  "Buffer name for pytest suites.")
+(defun pytest-window-split (window)
+  "Prefer horizontal split of WINDOW regardless of layout."
+  (split-window (frame-root-window) (frame-root-window) 'below))
+
+(defun pytest-buffer-name ()
+  (format "*%s-test*" (projectile-project-name)))
 
 (defun pytest-save-command (command)
   "Save the currently executed COMMAND in the history lookup."
-  (puthash (projectile-project-root) command pytest-history))
+  (puthash (projectile-project-name) command pytest-history))
 
-(defun pytest-command-runner (params bufferName)
-  "Execute pytest process with the given PARAMS and put output into into a special bufer named BUFFERNAME."
-  (let* ((*server-buffer* (get-buffer-create bufferName))
-	 ;; prefer horizontal split
-	 (split-window-preferred-function 'mg/split-window-horizontal)
-	 (command (format "%s %s" pytest-cmd params)))
-    ;; If the process is not already running, start it
-    (when (not (get-process bufferName))
-      (with-current-buffer *server-buffer*
-	;; if there is already output from previous run clear it.
-	(when (> (buffer-size *server-buffer*) 0)
-	  (erase-buffer))
-	(ansi-color-for-comint-mode-on)
-	(comint-mode)
-	(pytest-mode))
-      (let ((*server-process*
-	     (start-process-shell-command bufferName *server-buffer* command)))
-	(set-process-filter *server-process* 'comint-output-filter)
-	(pytest-save-command params)))
-    ;; switch focus to server buffer if its not already visible
-    (when (not (get-buffer-window *server-buffer*))
-      (switch-to-buffer-other-window bufferName))))
+(defun pytest-command-formatter (params)
+  (append (split-string-and-unquote pytest-cmd) params))
 
-(defun pytest-run-failed-in-string (string)
+(defun pytest-interactive-runner (params)
+  (let* ((default-directory (projectile-project-root))
+	(split-window-preferred-function 'pytest-window-split)
+	(args (pytest-command-formatter params))
+	(cmd (car args))
+        (switches (cdr args))
+	(process-name (pytest-buffer-name))
+	(*buffer* (get-buffer-create process-name)))
+    ;; save the invocation in the history
+    (pytest-save-command params)
+    ;; erase buffer if there is no process running and it has previous output
+    (with-current-buffer *buffer*
+      (when (and (not (term-check-proc *buffer*))
+		 (> (buffer-size *buffer*) 0))
+	(let ((inhibit-read-only t))
+	  (erase-buffer)))
+      ;; try spawn the process -- nop if process is already running
+      (apply 'term-ansi-make-term process-name cmd nil switches)
+      (term-mode)
+      (term-char-mode)
+      (pytest-mode))
+    *buffer*))
+
+(defun pytest-command-runner (params)
+  (let ((split-window-preferred-function 'pytest-window-split)
+	(*buffer* (pytest-interactive-runner params)))
+    (when (not (get-buffer-window *buffer*))
+      (switch-to-buffer-other-window *buffer*))))
+
+(defun pytest-get-failed-in-string (string)
   "Parse the failed test(s) from the STRING and re-run just the test(s) extracted."
   (let ((pos 0)
 	(matches)
@@ -68,50 +84,47 @@
       (while (string-match "^\\(FAILED\\|ERROR\\) \\(.*?\\.py::.*?\\)\\( - \\|$\\)" string pos)
 	(push (match-string 2 string) matches)
 	(setq pos (match-end 2))))
-    (setq params (mapconcat (lambda (m) (format "\"%s\"" m)) matches " "))
-    (pytest-command-runner params pytest-buffer-name)))
+    matches))
 
 (defun pytest-rerun-failed ()
   "Re-run failed test(s) in matched in the test runner buffer."
   (interactive)
-  (pytest-run-failed-in-string (buffer-string)))
+  (pytest-command-runner (pytest-get-failed-in-string (buffer-string))))
 
 (defun pytest-run-failed-selection ()
   "Re-run fialed test(s) in marked-region."
   (interactive)
   (let (start end)
     (if (use-region-p)
-	(setq start (region-beginning) end (region-end))
+	(progn
+	  (setq start (region-beginning) end (region-end))
+	  (deactivate-mark))
       (setq start (line-beginning-position) end (line-end-position)))
-    (pytest-run-failed-in-string (buffer-substring start end))))
+    (pytest-command-runner
+     (pytest-get-failed-in-string (buffer-substring start end)))))
 
 (defun pytest-run-previous ()
   "Run the previous command again."
   (interactive)
-  (if-let* ((default-directory (projectile-project-root))
-	    (last-command (gethash default-directory pytest-history)))
-      (pytest-command-runner last-command pytest-buffer-name)
+  (if-let* ((last-command (gethash (projectile-project-name) pytest-history)))
+      (pytest-command-runner last-command)
     (error "No previous pytest invocations")))
 
+(defun pytest-run ()
+  (interactive)
+  (pytest-command-runner (split-string-and-unquote pytest-test-dir)))
+
 (defun pytest-run-current-file ()
-  "Pass the file name associated with buffer as argument to pytest runner."
   (interactive)
   (pytest-command-runner
-   (string-remove-prefix (projectile-project-root) buffer-file-name)
-   pytest-buffer-name))
-
-
-(defun pytest-run ()
-  "Run the test suite for the current projectile project."
-  (interactive)
-  (let ((default-directory (projectile-project-root)))
-    (pytest-command-runner pytest-test-dir pytest-buffer-name)))
+   (split-string-and-unquote
+    (string-remove-prefix (projectile-project-root) buffer-file-name))))
 
 (defun pytest-open-buffer ()
   "Open the pytest buffer."
   (interactive)
-  (let ((split-window-preferred-function 'mg/split-window-horizontal))
-    (switch-to-buffer-other-window pytest-buffer-name)))
+  (let ((split-window-preferred-function 'pytest-window-split))
+    (switch-to-buffer-other-window (pytest-buffer-name))))
 
 (provide 'pytest)
 ;;; pytest.el ends here
