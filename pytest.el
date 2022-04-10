@@ -117,6 +117,7 @@
   (append (split-string-and-unquote pytest-cmd) params))
 
 (defun pytest-interactive-runner (params)
+  "Spawn the pytest process with the given PARAMS."
   (let* ((default-directory (projectile-project-root))
 	 (split-window-preferred-function 'pytest-window-split)
 	 (args (pytest-command-formatter params))
@@ -139,12 +140,14 @@
     *buffer*))
 
 (defun pytest-command-runner (params)
+  "Spawn the pytest process with given PARAMS and open proces buffer."
   (let ((split-window-preferred-function 'pytest-window-split)
 	(*buffer* (pytest-interactive-runner params)))
     (when (not (get-buffer-window *buffer*))
       (switch-to-buffer-other-window *buffer*))))
 
 (defun pytest-parent-class ()
+  "Find the first occurance of a python class above current point."
   (save-match-data
     (when (re-search-backward "^class \\(.*?\\):" nil t)
       (match-string-no-properties 1))))
