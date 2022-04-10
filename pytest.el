@@ -22,43 +22,82 @@
   :group 'pytest-mode)
 
 (defcustom pytest-test-dir ""
-  "Needed temporarily while we have multiple folders in papyrus."
+  "Explicitly set the test directory rather than relying on pytests discovery."
   :group 'pytest-mode)
 
 (defcustom pytest-history (make-hash-table :test 'equal)
   "Record the history of pytest commands."
   :group 'pytest-mode)
 
-(transient-define-prefix pytest-runner ()
-  "Pytest Runner"
-  ["Arguments"
-   ("-v", "Verbose" "-vv")
-   ("-l", "No SQLA Logs" "--no-sqla-logs")]
-  ["Test Current"
-   :if is-test-file-p
-   ("c" "buffer" pytest-run-current-file)
-   ("f" "function" pytest-run-current-test)]
-  ["Past Invocations"
-   :if has-invocations-p
-   ("p" "run previous" pytest-run-previous)]
-  ["Failed Tetst"
-   :if has-failed-tests-p
-   ("f" "run failed tests" pytest-rerun-failed)
-   ("s" "run selection" pytest-run-failed-selection)]
-  ["General"
-   ("r" "run tests" pytest-run)
-   ("b" "pytest buffer" pytest-open-buffer)])
+(defun pytest-extras-reader (prompt _initial-input history)
+  "Read extra flags to be passed to pytest from the user."
+  (magit-completing-read prompt '() nil nil _initial-input history))
 
-(defun is-test-file-p ()
+(defclass pytest-extra-arg (transient-argument)
+  ((reader :initarg :reader)
+   (argument :initarg :argument :initform "")
+   (value :initarg :value :initform "")))
+
+(cl-defmethod transient-format-value ((obj pytest-extra-arg))
+  (if-let ((value (oref obj value)))
+      (if (oref obj multi-value)
+          (if (cdr value)
+              (mapconcat (lambda (v)
+                           (concat "\n     "
+                                   (propertize v 'face 'transient-value)))
+                         value "")
+            (propertize (car value) 'face 'transient-value))
+        (propertize (car (split-string value "\n"))
+                    'face 'transient-value))
+    (propertize "unset" 'face 'transient-inactive-value)))
+
+(transient-define-infix pytest-extra-args ()
+  :class 'pytest-extra-arg
+  :reader #'pytest-extras-reader )
+
+(transient-define-prefix pytest-runner ()
+  "Pytest Runner Interface"
+  ["Arguments"
+   ("-v" "Verbose" "-vv")
+   ("-l" "No SQLA Logs" "--no-sqla-logs")
+   ("-e" "Extra pytes flags" pytest-extra-args)]
+  [["Test Current"
+    :if pytest-is-test-file-p
+    ("c" "buffer" pytest-run-current-file)
+    ("f" "function" pytest-run-current-test)]
+   ["Past Invocations"
+    :if pytest-has-invocations-p
+    ("p" "run previous" pytest-run-previous)]
+   ["Failed Tetst"
+    :if pytest-has-failed-tests-p
+    ("f" "run failed tests" pytest-rerun-failed) ("s" "run selection" pytest-run-failed-selection)]
+   ["General"
+    ("r" "run tests" pytest-run)
+    ("b" "pytest buffer" pytest-open-buffer)]])
+
+(defun pytest-is-test-file-p ()
+  "Non-nil if current file has 'test_' prefix in name."
   (string-prefix-p "test_" (file-name-nondirectory (or (buffer-file-name) ""))))
 
-(defun has-invocations-p ()
+(defun pytest-has-invocations-p ()
+  "Non-nil if there are previous pytest invocations for proejct."
   (not (eq (gethash (projectile-project-name) pytest-history) nil)))
 
-(defun has-failed-tests-p ()
+(defun pytest-has-failed-tests-p ()
+  "Non-nil if buffer has failed test strings."
   (> (length (pytest-get-failed-in-string (buffer-string))) 0))
 
+(defun pytest-open-buffer ()
+  "Open the pytest buffer."
+  (interactive)
+  (let ((split-window-preferred-function 'pytest-window-split)
+	(buffer (pytest-buffer-name)))
+    (if (get-buffer buffer)
+	(switch-to-buffer-other-window buffer)
+      (message (concat "No pytest buffer for project " (projectile-project-name))))))
+
 (defun transient-pytest-args ()
+  "Transient args getter."
   (transient-args 'pytest-runner))
 
 (defun pytest-window-split (window)
@@ -66,6 +105,7 @@
   (split-window (frame-root-window) (frame-root-window) 'below))
 
 (defun pytest-buffer-name ()
+  "Generate buffer name for test invocation."
   (format "*%s-test*" (projectile-project-name)))
 
 (defun pytest-save-command (command)
@@ -73,6 +113,7 @@
   (puthash (projectile-project-name) command pytest-history))
 
 (defun pytest-command-formatter (params)
+  "Generate a list of command parts from PARAMS `term-ansi-make-term` for test process."
   (append (split-string-and-unquote pytest-cmd) params))
 
 (defun pytest-interactive-runner (params)
@@ -83,7 +124,6 @@
          (switches (cdr args))
 	 (process-name (pytest-buffer-name))
 	 (*buffer* (get-buffer-create process-name)))
-    ;; save the invocation in the history
     (pytest-save-command params)
     ;; erase buffer if there is no process running and it has previous output
     (with-current-buffer *buffer*
@@ -103,11 +143,6 @@
 	(*buffer* (pytest-interactive-runner params)))
     (when (not (get-buffer-window *buffer*))
       (switch-to-buffer-other-window *buffer*))))
-(php-current-class)
-
-(defun pytest-get-test-name (string)
-  (string-match "def \\(test_.*?\\)(" string 0)
-  (match-string 1 string))
 
 (defun pytest-parent-class ()
   (save-match-data
@@ -145,12 +180,12 @@
     matches))
 
 (defun pytest-rerun-failed (&optional flags)
-  "Re-run failed test(s) in matched in the test runner buffer."
+  "Re-run failed test(s) in matched in the test runner buffer with provided FLAGS."
   (interactive (list (transient-pytest-args)))
   (pytest-command-runner (append (pytest-get-failed-in-string (buffer-string)) flags)))
 
 (defun pytest-run-failed-selection (&optional flags)
-  "Re-run fialed test(s) in marked-region."
+  "Re-run fialed test(s) with provded FLAGS in marked-region."
   (interactive (list (transient-pytest-args)))
   (let (start end)
     (if (use-region-p)
@@ -173,16 +208,11 @@
   (pytest-command-runner (append (split-string-and-unquote pytest-test-dir) flags)))
 
 (defun pytest-run-current-file (&optional flags)
+  "Run the current file "
   (interactive (list (transient-pytest-args)))
   (pytest-command-runner
-   (split-string-and-unquote
-    (string-remove-prefix (projectile-project-root) buffer-file-name))))
-
-(defun pytest-open-buffer ()
-  "Open the pytest buffer."
-  (interactive)
-  (let ((split-window-preferred-function 'pytest-window-split))
-    (switch-to-buffer-other-window (pytest-buffer-name))))
+   (append (split-string-and-unquote
+	    (string-remove-prefix (projectile-project-root) buffer-file-name)) flags)))
 
 (provide 'pytest)
 ;;; pytest.el ends here
