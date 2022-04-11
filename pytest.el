@@ -13,8 +13,9 @@
   "pytest"
   :lighter pytest
   :keymap (let ((map (make-sparse-keymap)))
-            (define-key map (kbd "q") 'quit-window)
-	    (define-key map (kbd "t") 'pytest-runner)
+            (define-key map (kbd "C-q") 'quit-window)
+	    (define-key map (kbd "C-t") 'pytest-runner)
+	    (define-key map (kbd "C-<return>") 'pytest-jump-to-failed)
             map))
 
 (defcustom pytest-cmd "docker-compose run --rm app pytest"
@@ -58,17 +59,17 @@
 (transient-define-prefix pytest-runner ()
   "Pytest Runner Interface"
   ["Arguments"
-   ("-v" "Verbose" "-vv")
-   ("-l" "No SQLA Logs" "--no-sqla-logs")
-   ("-e" "Extra pytes flags" pytest-extra-args)]
+   ("-v" "verbose" "-vv")
+   ("-l" "no-sqla-logs" "--no-sqla-logs")
+   ("-e" "extra-flags" pytest-extra-args)]
   [["Test Current"
     :if pytest-is-test-file-p
-    ("c" "buffer" pytest-run-current-file)
-    ("f" "function" pytest-run-current-test)]
+    ("cb" "buffer" pytest-run-current-file)
+    ("cf" "function" pytest-run-current-test)]
    ["Past Invocations"
     :if pytest-has-invocations-p
     ("p" "run previous" pytest-run-previous)]
-   ["Failed Tetst"
+   ["Failed Tests"
     :if pytest-has-failed-tests-p
     ("f" "run failed tests" pytest-rerun-failed) ("s" "run selection" pytest-run-failed-selection)]
    ["General"
@@ -181,6 +182,14 @@
 	(push (match-string 2 string) matches)
 	(setq pos (match-end 2))))
     matches))
+
+(defun pytest-jump-to-failed ()
+  (interactive)
+  (let ((content (buffer-substring (line-beginning-position) (line-end-position))))
+    (save-match-data
+      (string-match "^\\(FAILED\\|ERROR\\)\s.*?.py::\\(.*?\\)\\(\s-\\|$\\)" content 0)
+      (search-backward
+       (format "__ %s __" (replace-regexp-in-string "::" "." (match-string 2 content)))))))
 
 (defun pytest-rerun-failed (&optional flags)
   "Re-run failed test(s) in matched in the test runner buffer with provided FLAGS."
