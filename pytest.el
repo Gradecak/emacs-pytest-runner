@@ -9,15 +9,6 @@
 (require 'projectile)
 (require 'transient)
 
-(define-minor-mode pytest-mode
-  "pytest"
-  :lighter pytest
-  :keymap (let ((map (make-sparse-keymap)))
-            (define-key map (kbd "C-q") 'quit-window)
-	    (define-key map (kbd "C-t") 'pytest-runner)
-	    (define-key map (kbd "C-<return>") 'pytest-jump-to-failed)
-            map))
-
 (defcustom pytest-cmd "docker-compose run --rm app pytest"
   "The pytest executable that will be used by pytest mode."
   :group 'pytest-mode)
@@ -30,9 +21,22 @@
   "Record the history of pytest commands."
   :group 'pytest-mode)
 
-(defun pytest-extras-reader (prompt _initial-input history)
-  "Read extra flags to be passed to pytest from the user."
-  (magit-completing-read prompt '() nil nil _initial-input history))
+(defvar pytest-mode-map
+  (let ((map (make-keymap "pytest-mode-map")))
+    (define-key map (kbd "C-q") 'quit-window)
+    (define-key map (kbd "C-t") 'pytest-runner)
+    (define-key map (kbd "C-<return>") 'pytest-jump-to-failed)
+    map))
+
+(define-minor-mode pytest-mode
+  "Pytest mode."
+  :lighter pytest
+  :keymap pytest-mode-map)
+
+
+;;
+;; -- Pytest transient
+;;
 
 (defclass pytest-extra-arg (transient-argument)
   ((reader :initarg :reader)
@@ -41,18 +45,16 @@
 
 (cl-defmethod transient-format-value ((obj pytest-extra-arg))
   (if-let ((value (oref obj value)))
-      (if (oref obj multi-value)
-          (if (cdr value)
-              (mapconcat (lambda (v)
-                           (concat "\n     "
-                                   (propertize v 'face 'transient-value)))
-                         value "")
-            (propertize (car value) 'face 'transient-value))
-        (propertize (car (split-string value "\n"))
-                    'face 'transient-value))
+      (propertize value 'face 'transient-value)
     (propertize "unset" 'face 'transient-inactive-value)))
 
-(transient-define-infix pytest-extra-args ()
+(defun pytest-extras-reader (prompt _initial-input history)
+  "Read extra flags to be passed to pytest from the user."
+  (magit-completing-read prompt '() nil nil _initial-input history))
+
+(transient-define-argument pytest-extra-args ()
+  :description "extra-flags"
+  :shortarg "-e"
   :class 'pytest-extra-arg
   :reader #'pytest-extras-reader )
 
@@ -61,7 +63,7 @@
   ["Arguments"
    ("-v" "verbose" "-vv")
    ("-l" "no-sqla-logs" "--no-sqla-logs")
-   ("-e" "extra-flags" pytest-extra-args)]
+   (pytest-extra-args)]
   [["Test Current"
     :if pytest-is-test-file-p
     ("cb" "buffer" pytest-run-current-file)
@@ -71,7 +73,8 @@
     ("p" "run previous" pytest-run-previous)]
    ["Failed Tests"
     :if pytest-has-failed-tests-p
-    ("f" "run failed tests" pytest-rerun-failed) ("s" "run selection" pytest-run-failed-selection)]
+    ("f" "run failed tests" pytest-run-failed)
+    ("s" "run selection" pytest-run-failed-selection)]
    ["General"
     ("r" "run tests" pytest-run)
     ("b" "pytest buffer" pytest-open-buffer)]])
@@ -100,6 +103,10 @@
 (defun transient-pytest-args ()
   "Transient args getter."
   (transient-args 'pytest-runner))
+
+;;
+;; -- Pytest Helpers
+;;
 
 (defun pytest-window-split (window)
   "Prefer horizontal split of WINDOW regardless of layout."
@@ -135,7 +142,6 @@
 	  (erase-buffer)))
       ;; try spawn the process -- nop if process is already running
       (apply 'term-ansi-make-term process-name cmd nil switches)
-      (term-mode)
       (term-char-mode)
       (pytest-mode))
     *buffer*))
@@ -153,7 +159,23 @@
     (when (re-search-backward "^class \\(.*?\\):" nil t)
       (match-string-no-properties 1))))
 
+(defun pytest-get-failed-in-string (string)
+  "Parse the failed test(s) from the STRING and re-run just the test(s) extracted."
+  (let ((pos 0)
+	(matches)
+	(params))
+    (save-match-data
+      (while (string-match "^\\(FAILED\\|ERROR\\) \\(.*?\\.py::.*?\\)\\( - \\|$\\)" string pos)
+	(push (match-string 2 string) matches)
+	(setq pos (match-end 2))))
+    matches))
+
+;;
+;; -- Interactives
+;;
+
 (defun pytest-run-current-test (&optional flags)
+  "Run the test above current point with optional FLAGS."
   (interactive (list (transient-pytest-args)))
   (save-excursion
     (mark-defun)
@@ -172,18 +194,8 @@
 	  (pytest-command-runner
 	   (append (split-string-and-unquote test-name) flags)))))))
 
-(defun pytest-get-failed-in-string (string)
-  "Parse the failed test(s) from the STRING and re-run just the test(s) extracted."
-  (let ((pos 0)
-	(matches)
-	(params))
-    (save-match-data
-      (while (string-match "^\\(FAILED\\|ERROR\\) \\(.*?\\.py::.*?\\)\\( - \\|$\\)" string pos)
-	(push (match-string 2 string) matches)
-	(setq pos (match-end 2))))
-    matches))
-
 (defun pytest-jump-to-failed ()
+  "Jump the the failed test start section."
   (interactive)
   (let ((content (buffer-substring (line-beginning-position) (line-end-position))))
     (save-match-data
@@ -191,13 +203,13 @@
       (search-backward
        (format "__ %s __" (replace-regexp-in-string "::" "." (match-string 2 content)))))))
 
-(defun pytest-rerun-failed (&optional flags)
+(defun pytest-run-failed (&optional flags)
   "Re-run failed test(s) in matched in the test runner buffer with provided FLAGS."
   (interactive (list (transient-pytest-args)))
   (pytest-command-runner (append (pytest-get-failed-in-string (buffer-string)) flags)))
 
 (defun pytest-run-failed-selection (&optional flags)
-  "Re-run fialed test(s) with provded FLAGS in marked-region."
+  "Re-run fialed test(s) with provded FLAGS in marked-region or current line."
   (interactive (list (transient-pytest-args)))
   (let (start end)
     (if (use-region-p)
@@ -216,11 +228,12 @@
     (error "No previous pytest invocations")))
 
 (defun pytest-run (&optional flags)
+  "Run pytest with optional FLAGS."
   (interactive (list (transient-pytest-args)))
   (pytest-command-runner (append (split-string-and-unquote pytest-test-dir) flags)))
 
 (defun pytest-run-current-file (&optional flags)
-  "Run the current file "
+  "Run pytest with the current file and optional FLAGS."
   (interactive (list (transient-pytest-args)))
   (pytest-command-runner
    (append (split-string-and-unquote
