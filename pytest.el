@@ -208,7 +208,7 @@
     (save-match-data
       (string-match "^\\(FAILED\\|ERROR\\)\s.*?.py::\\(.*?\\)\\(\s-\\|$\\)" content 0)
       (search-backward
-       (format "__ %s __" (replace-regexp-in-string "::" "." (match-string 2 content)))))))
+       (format "%s ___" (replace-regexp-in-string "::" "." (match-string 2 content)))))))
 
 (defun pytest-run-failed (&optional flags)
   "Re-run failed test(s) in matched in the test runner buffer with provided FLAGS."
