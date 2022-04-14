@@ -52,7 +52,7 @@
 
 (defun pytest-extras-reader (prompt _initial-input history)
   "Read extra flags to be passed to pytest from the user."
-  (magit-completing-read prompt '() nil nil _initial-input history))
+  (completing-read prompt '() nil nil _initial-input history))
 
 (transient-define-argument pytest-extra-args ()
   :description "extra-flags"
@@ -232,7 +232,7 @@
   (interactive)
   (if-let* ((history (gethash (projectile-project-name) pytest-history)))
       (pytest-command-runner
-       (split-string-and-unquote (magit-builtin-completing-read "command:" history)))
+       (split-string-and-unquote (completing-read "command:" history)))
     (error "No previous pytest invocations")))
 
 (defun pytest-run (&optional flags)
