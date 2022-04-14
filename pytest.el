@@ -17,9 +17,12 @@
   "Explicitly set the test directory rather than relying on pytests discovery."
   :group 'pytest-mode)
 
-(defcustom pytest-history (make-hash-table :test 'equal)
-  "Record the history of pytest commands."
-  :group 'pytest-mode)
+(defcustom pytest-history-ring-size 20
+  "Number of pytest invocations to save before overwritting last entries in history."
+  :group  'pytest-mode)
+
+;; for re-running previous pytest invocations we keep a history of per-projet
+(defvar pytest-history (make-hash-table :test 'equal))
 
 (defvar pytest-mode-map
   (let ((map (make-keymap "pytest-mode-map")))
@@ -32,7 +35,6 @@
   "Pytest mode."
   :lighter pytest
   :keymap pytest-mode-map)
-
 
 ;;
 ;; -- Pytest transient
@@ -116,9 +118,14 @@
   "Generate buffer name for test invocation."
   (format "*%s-test*" (projectile-project-name)))
 
-(defun pytest-save-command (command)
-  "Save the currently executed COMMAND in the history lookup."
-  (puthash (projectile-project-name) command pytest-history))
+(defun pytest-push-history (command)
+  "Save the currently executed COMMAND for future history lookup."
+  (let* ((project (projectile-project-name))
+	 (history (gethash project pytest-history))
+	 (command-string (mapconcat 'identity command " ")))
+    (puthash project
+	     (add-to-history 'history command-string pytest-history-ring-size)
+	     pytest-history)))
 
 (defun pytest-command-formatter (params)
   "Generate a list of command parts from PARAMS `term-ansi-make-term` for test process."
@@ -133,7 +140,7 @@
          (switches (cdr args))
 	 (process-name (pytest-buffer-name))
 	 (*buffer* (get-buffer-create process-name)))
-    (pytest-save-command params)
+    (pytest-push-history params)
     ;; erase buffer if there is no process running and it has previous output
     (with-current-buffer *buffer*
       (when (and (not (term-check-proc *buffer*))
@@ -223,8 +230,9 @@
 (defun pytest-run-previous ()
   "Run the previous command again."
   (interactive)
-  (if-let* ((last-command (gethash (projectile-project-name) pytest-history)))
-      (pytest-command-runner last-command)
+  (if-let* ((history (gethash (projectile-project-name) pytest-history)))
+      (pytest-command-runner
+       (split-string-and-unquote (magit-builtin-completing-read "command:" history)))
     (error "No previous pytest invocations")))
 
 (defun pytest-run (&optional flags)
