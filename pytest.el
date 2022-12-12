@@ -6,8 +6,11 @@
 
 ;;; Code:
 (require 'python)
-(require 'projectile)
+(require 'project)
 (require 'transient)
+
+(defun expanded-project-root ()
+  (expand-file-name (project-root (project-current))))
 
 (defcustom pytest-cmd "docker-compose run --rm app pytest"
   "The pytest executable that will be used by pytest mode."
@@ -46,24 +49,23 @@
    (value :initarg :value :initform "")))
 
 (cl-defmethod transient-format-value ((obj pytest-extra-arg))
+  "Implementation of the value formatter for the OBJ instance of PYTEST-EXTRA-ARG class."
   (if-let ((value (oref obj value)))
       (propertize value 'face 'transient-value)
     (propertize "unset" 'face 'transient-inactive-value)))
-
-(defun pytest-extras-reader (prompt _initial-input history)
-  "Read extra flags to be passed to pytest from the user."
-  (completing-read prompt '() nil nil _initial-input history))
 
 (transient-define-argument pytest-extra-args ()
   :description "extra-flags"
   :shortarg "-e"
   :class 'pytest-extra-arg
-  :reader #'pytest-extras-reader )
+  :reader #'(lambda (prompt _initial history)
+	      (completing-read prompt '() nil nil _initial history)))
 
 (transient-define-prefix pytest-runner ()
   "Pytest Runner Interface"
   ["Arguments"
    ("-v" "verbose" "-vv")
+   ("-d" "pdb" "--pdb")
    ("-l" "no-sqla-logs" "--no-sqla-logs")
    (pytest-extra-args)]
   [["Test Current"
@@ -87,20 +89,11 @@
 
 (defun pytest-has-invocations-p ()
   "Non-nil if there are previous pytest invocations for proejct."
-  (not (eq (gethash (projectile-project-name) pytest-history) nil)))
+  (not (eq (gethash (project-name (project-current)) pytest-history) nil)))
 
 (defun pytest-has-failed-tests-p ()
   "Non-nil if buffer has failed test strings."
   (> (length (pytest-get-failed-in-string (buffer-string))) 0))
-
-(defun pytest-open-buffer ()
-  "Open the pytest buffer."
-  (interactive)
-  (let ((split-window-preferred-function 'pytest-window-split)
-	(buffer (pytest-buffer-name)))
-    (if (get-buffer buffer)
-	(switch-to-buffer-other-window buffer)
-      (message (concat "No pytest buffer for project " (projectile-project-name))))))
 
 (defun transient-pytest-args ()
   "Transient args getter."
@@ -116,31 +109,25 @@
 
 (defun pytest-buffer-name ()
   "Generate buffer name for test invocation."
-  (format "*%s-test*" (projectile-project-name)))
+  (format "*%s-test*" (project-name (project-current))))
 
 (defun pytest-push-history (command)
   "Save the currently executed COMMAND for future history lookup."
-  (let* ((project (projectile-project-name))
+  (let* ((project (project-name (project-current)))
 	 (history (gethash project pytest-history))
 	 (command-string (mapconcat 'identity command " ")))
     (puthash project
 	     (add-to-history 'history command-string pytest-history-ring-size)
 	     pytest-history)))
 
-(defun pytest-command-formatter (params)
-  "Generate a list of command parts from PARAMS `term-ansi-make-term` for test process."
-  (append (split-string-and-unquote pytest-cmd) params))
-
-(defun pytest-interactive-runner (params)
-  "Spawn the pytest process with the given PARAMS."
-  (let* ((default-directory (projectile-project-root))
-	 (split-window-preferred-function 'pytest-window-split)
-	 (args (pytest-command-formatter params))
-	 (cmd (car args))
-         (switches (cdr args))
+(defun pytest-run-without-focus (params)
+  "Spawn the pytest process with the given PARAMS.
+Returns the buffer in which the process is spawned."
+  (pytest-push-history params)
+  (let* ((default-directory (project-root (project-current)))
+	 (args (append (split-string-and-unquote pytest-cmd) params))
 	 (process-name (pytest-buffer-name))
 	 (*buffer* (get-buffer-create process-name)))
-    (pytest-push-history params)
     ;; erase buffer if there is no process running and it has previous output
     (with-current-buffer *buffer*
       (when (and (not (term-check-proc *buffer*))
@@ -148,7 +135,8 @@
 	(let ((inhibit-read-only t))
 	  (erase-buffer)))
       ;; try spawn the process -- nop if process is already running
-      (apply 'term-ansi-make-term process-name cmd nil switches)
+      ;; use term-ansi-make-term for better interactive support when pdb is spawned.
+      (apply 'term-ansi-make-term process-name (car args) nil (cdr args))
       (term-char-mode)
       (pytest-mode))
     *buffer*))
@@ -156,7 +144,7 @@
 (defun pytest-command-runner (params)
   "Spawn the pytest process with given PARAMS and open proces buffer."
   (let ((split-window-preferred-function 'pytest-window-split)
-	(*buffer* (pytest-interactive-runner params)))
+	(*buffer* (pytest-run-without-focus params)))
     (when (not (get-buffer-window *buffer*))
       (switch-to-buffer-other-window *buffer*))))
 
@@ -187,7 +175,7 @@
   (save-excursion
     (mark-defun)
     (let ((region (buffer-substring (region-beginning) (region-end)))
-	  (test-name (string-remove-prefix (projectile-project-root) buffer-file-name)))
+	  (test-name (string-remove-prefix (expanded-project-root) buffer-file-name)))
       (deactivate-mark)
       (save-match-data
 	(string-match "^\\(\s\\{4\\}\\)?def \\(test_.*?\\)(" region 0)
@@ -230,7 +218,7 @@
 (defun pytest-run-previous ()
   "Run the previous command again."
   (interactive)
-  (if-let* ((history (gethash (projectile-project-name) pytest-history)))
+  (if-let* ((history (gethash (project-name (project-current)) pytest-history)))
       (pytest-command-runner
        (split-string-and-unquote (completing-read "command:" history)))
     (error "No previous pytest invocations")))
@@ -245,7 +233,16 @@
   (interactive (list (transient-pytest-args)))
   (pytest-command-runner
    (append (split-string-and-unquote
-	    (string-remove-prefix (projectile-project-root) buffer-file-name)) flags)))
+	    (string-remove-prefix (expanded-project-root) buffer-file-name)) flags)))
+
+(defun pytest-open-buffer ()
+  "Open the pytest buffer for the current project."
+  (interactive)
+  (let ((split-window-preferred-function 'pytest-window-split)
+	(buffer (pytest-buffer-name)))
+    (if (get-buffer buffer)
+	(switch-to-buffer-other-window buffer)
+      (message (concat "No pytest buffer for project " (project-name (project-current)))))))
 
 (provide 'pytest)
 ;;; pytest.el ends here
